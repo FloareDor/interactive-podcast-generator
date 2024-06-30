@@ -10,7 +10,7 @@ from bs4 import BeautifulSoup
 from dotenv import load_dotenv
 from langchain_google_genai import ChatGoogleGenerativeAI
 from tts import TextToSpeech
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Body
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import speech_recognition as sr
@@ -18,6 +18,7 @@ from fastapi import HTTPException, UploadFile, File
 from fastapi.responses import JSONResponse
 import io
 from pydub import AudioSegment
+import json
 
 load_dotenv()
 
@@ -194,17 +195,52 @@ async def generate_podcast(websocket: WebSocket):
     finally:
         global_podcast_crew = None
 
+# @app.post("/ask")
+# async def ask_question(request: QuestionRequest):
+#     global global_podcast_crew
+#     if global_podcast_crew is None:
+#         return {"error": "No active podcast session"}
+    
+#     answer, host_response = await global_podcast_crew.handle_listener_question(request.question)
+#     return {
+#         "answer": answer,
+#         "next_host": host_response,
+#     }
+
 @app.post("/ask")
-async def ask_question(request: QuestionRequest):
+async def ask_question(file: UploadFile = File(...)):
     global global_podcast_crew
     if global_podcast_crew is None:
-        return {"error": "No active podcast session"}
+        raise HTTPException(status_code=400, detail="No active podcast session")
     
-    answer, host_response = await global_podcast_crew.handle_listener_question(request.question)
-    return {
-        "answer": answer,
-        "next_host": host_response,
-    }
+    try:
+        # Transcribe the audio
+        response = await transcribe_audio(file)
+        print("response:", response, type(response))
+        json_str = response.body.decode('utf-8')
+        # Parse the JSON string to a Python dictionary
+        data = json.loads(json_str)
+        question = data['transcription']
+        print("Transcribed question:", question)
+        
+        if not isinstance(question, str):
+            raise HTTPException(status_code=400, detail="Failed to transcribe the audio")
+        
+        # Handle the question
+        answer, host_response = await global_podcast_crew.handle_listener_question(question)
+        
+        return {
+            "question": question,
+            "answer": answer,
+            "next_host": host_response,
+        }
+    except HTTPException as http_exc:
+        # Re-raise HTTP exceptions as they are already formatted correctly
+        raise http_exc
+    except Exception as e:
+        # Log the error for debugging
+        print(f"Error in ask_question: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"An error occurred while processing your question: {str(e)}")
 
 @app.post("/transcribe/")
 async def transcribe_audio(file: UploadFile = File(...)):
